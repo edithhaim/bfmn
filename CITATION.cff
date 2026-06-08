@@ -1,0 +1,16 @@
+cff-version: 1.2.0
+title: "Behavioural Forma Mentis Networks"
+message: "If you use this software, please cite it as follows."
+type: software
+
+authors:
+  - family-names: "Haim"
+    given-names: "Edith"
+
+repository-code: "https://github.com/edithhaim/bfmn"
+
+license: MIT
+
+abstract: >
+  R scripts for constructing and analysing Behavioural Forma Mentis Networks
+  from semantic association and affective data.
