@@ -1,0 +1,304 @@
+---
+title: "Edge Bundling"
+author: "Edith Haim"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r echo=FALSE, include=FALSE}
+library(dplyr)
+library(ggplot2)
+library(ggraph)
+library(igraph)
+library(cowplot)
+library(tidyr)
+library(readr)
+library(readxl)
+```
+
+## Associations
+```{r include=FALSE}
+
+Associations <- function(type = "American", data = "human", category = "Students.low", word = "art"){
+  # Erstelle den Namen des Tabellenblatts
+  sheet_name <- paste(type, category, data, sep = "_")
+
+  # Lese die Daten aus der Excel-Datei
+  file_path <- "~/PhD Edith Haim/Research Projects/8° Multiplex PhD Project/0. Network Generating/BFMN Scripts/PhD_FMN_Data.xlsx"
+  data_all <- read_excel(file_path, sheet = sheet_name)
+
+  # create a data frame
+  data <- subset(data_all, cue_word == word)
+  associations <- rbind(
+    data %>% select(cue_word, association = association1),
+    data %>% select(cue_word, association = association2),
+    data %>% select(cue_word, association = association3))
+  
+  # frequencies of associations
+  freq_associations <- associations %>% group_by(cue_word, association) %>% summarise(FREQ = n(), .groups = "drop")
+  
+  # plot
+  freq_associations %>%
+    mutate(association = reorder(association, FREQ)) %>%
+    ggplot( aes(x=association, y=FREQ)) +
+    geom_bar(stat="identity", fill="#f68060", alpha=.6, width=.4) +
+    coord_flip() +
+    xlab("") +
+    theme_bw()
+  
+  freq_associations
+}
+```
+
+## Edge Bundling
+```{r include=FALSE}
+
+EdgeBundling <- function(type = "American", data = "human", category = "Students.low", word = "art"){
+  # Erstelle den Namen des Tabellenblatts
+  sheet_name <- paste(type, category, data, sep = "_")
+
+  # Lese die Daten aus der Excel-Datei
+  file_path <- "~/PhD Edith Haim/Research Projects/8° Multiplex PhD Project/0. Network Generating/BFMN Scripts/PhD_FMN_Data.xlsx"
+  data_all <- read_excel(file_path, sheet = sheet_name)
+
+# create a data frame giving the hierarchical structure of your individuals
+data <- subset(data_all, cue_word == word)
+connections <- rbind(
+  data %>% select(from = cue_word, to = association1),
+  data %>% select(from = cue_word, to = association2),
+  data %>% select(from = cue_word, to = association3))
+
+# delete connections that only appear once
+connections <- connections %>%
+  group_by(from, to) %>%
+  filter(n() > 1) %>%
+  ungroup()
+
+# remove missing data
+connections <- subset(connections, !is.na(connections$to))
+connections <- subset(connections, connections$to != "")
+
+# create hierarchy structure
+hierarchy <- data.frame(origin = "origin", name = unique(c(as.character(connections$from), as.character(connections$to))))
+
+# create a vertices data.frame. One line per object of our hierarchy, giving features of nodes.
+vertices <- data.frame(name = unique(c(as.character(hierarchy$origin), as.character(hierarchy$name))))
+
+#delete all duplicate connections
+connections <- connections %>% distinct(to, .keep_all = TRUE)
+
+# The connection object must refer to the ids of the leaves:
+from <- match( connections$from, vertices$name)
+to <- match( connections$to, vertices$name)
+
+
+# Calculate median valence and perform sign test
+concept_rating <- rbind(
+  data_all %>% select(concept = cue_word, rating),
+  data_all %>% select(concept = association1, rating = rating1),
+  data_all %>% select(concept = association2, rating = rating2),
+  data_all %>% select(concept = association3, rating = rating3)
+) %>% filter(concept != "") %>% filter(!is.na(rating))
+
+perform_wilcoxon_test <- function(name) {
+  concept_ratings_concept <- subset(concept_rating, concept == name)$rating
+  concept_ratings_remaining <- subset(concept_rating, concept != name)$rating
+  wilcox_test_result <- wilcox.test(concept_ratings_concept, concept_ratings_remaining, alternative = "two.sided", exact = FALSE)
+  return(wilcox_test_result$p.value)
+}
+
+properties <- hierarchy
+properties$median_valence <- sapply(properties$name, function(name) {median(subset(concept_rating, concept == name)$rating, na.rm = TRUE)})
+properties$median_remaining <- sapply(properties$name, function(name) {median(subset(concept_rating, concept != name)$rating, na.rm = TRUE)})
+properties$p_value <- sapply(properties$name, perform_wilcoxon_test)
+
+properties <- properties %>% mutate(valence_category = case_when(
+  median_valence > median_remaining & p_value < 0.1 ~ "positive",
+  median_valence < median_remaining & p_value < 0.1 ~ "negative",
+  TRUE ~ "neutral"
+))
+
+# Merge the valence information back to the vertices data frame
+properties <- properties %>%
+  mutate(node_color = case_when(
+    valence_category == "positive" ~ "#3491fa", 
+    valence_category == "negative" ~ "#ed382e", 
+    valence_category == "neutral" ~ "black",
+    TRUE ~ "#bdb7be"  # Default to grey for any other cases
+  ))
+
+# Create link_color based on the combination of valence categories of connected nodes
+properties <- properties %>%
+  mutate(link_color = case_when(
+    valence_category == "positive" & valence_category[properties$name == word] == "positive" ~ "#3491fa", 
+    valence_category == "negative" & valence_category[properties$name == word] == "negative" ~ "#ed382e", 
+    valence_category == "neutral" & valence_category[properties$name == word] == "neutral" ~ "#bdb7be", 
+    (valence_category == "positive" & valence_category[properties$name == word] == "negative") | 
+      (valence_category == "negative" & valence_category[properties$name == word] == "positive") ~ "purple",
+    TRUE ~ "#bdb7be"  # Default to grey for any other cases
+  )) 
+
+
+# Create link table: assign edge colors based on the valence of the connected nodes
+connections2 <- connections
+connections2$nodecolor1 <- properties$node_color[match(connections2$from, properties$name)]
+connections2$nodecolor2 <- properties$node_color[match(connections2$to, properties$name)]
+
+link <- case_when(
+  connections2$nodecolor1 == "#3491fa" & connections2$nodecolor2 == "#3491fa" ~ "#3491fa",
+  connections2$nodecolor1 == "#ed382e" & connections2$nodecolor2 == "#ed382e" ~ "#ed382e",
+  connections2$nodecolor1 == "black" & connections2$nodecolor2 == "black" ~ "#bdb7be",
+  (connections2$nodecolor1 == "#3491fa" & connections2$nodecolor2 == "#ed382e") |
+    (connections2$nodecolor1 == "#ed382e" & connections2$nodecolor2 == "#3491fa") ~ "purple",
+  TRUE ~ "#bdb7be"
+)
+
+link <- lapply(link, function(x) replicate(100, x))
+link <- unlist(link, recursive = FALSE)
+####
+
+#create width, length, height
+properties$size <- ifelse(properties$name != word, 5, 7.5)
+properties$height <- ifelse(properties$name != word, 0.2, 0.35)
+properties$width <- log(nchar(as.character(properties$name))) *0.2 + 0.01
+  
+# plot
+graph <- graph_from_data_frame(hierarchy, vertices = vertices)
+
+ggraph(graph, layout = 'dendrogram', circular = TRUE) + 
+  geom_node_point(aes(filter = leaf, x = x*1.05, y = y*1.05), alpha = 0) +
+  geom_conn_bundle(data = get_con(from = from, to = to), alpha = 1, colour = link, width = 2, tension = 1) +
+  geom_node_tile(aes(x = x*1.2, y = y*1.2, filter = leaf), width = properties$width, height = properties$height, fill = "lightgrey", alpha = 1, colour = NA) +
+  geom_node_text(aes(x = x*1.2, y = y*1.2, filter = leaf, label = name, angle = 0, hjust = 0.5, vjust = 0.5), colour = properties$node_color, size = properties$size, alpha = 1.5) +
+  theme_void() +
+  theme(legend.position = "none",
+        plot.margin = unit(c(0,0,0,0),"cm"),
+  ) +
+  expand_limits(x = c(-1.5, 1.5), y = c(-1.5, 1.5))
+
+}
+```
+
+## Results
+```{r}
+Associations(type = "American", data = "human", category = "Students.high", word = "school")
+```
+
+
+## Austrian - Students.high
+```{r}
+EdgeBundling(type = "Austrian", data = "human", category = "Students.high", word = "kunst")
+EdgeBundling(type = "Austrian", data = "human", category = "Students.high", word = "biologie")
+EdgeBundling(type = "Austrian", data = "human", category = "Students.high", word = "chemie")
+EdgeBundling(type = "Austrian", data = "human", category = "Students.high", word = "kreativität")
+EdgeBundling(type = "Austrian", data = "human", category = "Students.high", word = "leben")
+EdgeBundling(type = "Austrian", data = "human", category = "Students.high", word = "mathematik")
+EdgeBundling(type = "Austrian", data = "human", category = "Students.high", word = "physik")
+EdgeBundling(type = "Austrian", data = "human", category = "Students.high", word = "nachhaltigkeit")
+EdgeBundling(type = "Austrian", data = "human", category = "Students.high", word = "schule")
+EdgeBundling(type = "Austrian", data = "human", category = "Students.high", word = "universität")
+```
+
+## Austrian - Students.low
+```{r}
+EdgeBundling(type = "Austrian", data = "human", category = "Students.low", word = "kunst")
+EdgeBundling(type = "Austrian", data = "human", category = "Students.low", word = "biologie")
+EdgeBundling(type = "Austrian", data = "human", category = "Students.low", word = "chemie")
+EdgeBundling(type = "Austrian", data = "human", category = "Students.low", word = "kreativität")
+EdgeBundling(type = "Austrian", data = "human", category = "Students.low", word = "leben")
+EdgeBundling(type = "Austrian", data = "human", category = "Students.low", word = "mathematik")
+EdgeBundling(type = "Austrian", data = "human", category = "Students.low", word = "physik")
+EdgeBundling(type = "Austrian", data = "human", category = "Students.low", word = "nachhaltigkeit")
+EdgeBundling(type = "Austrian", data = "human", category = "Students.low", word = "schule")
+EdgeBundling(type = "Austrian", data = "human", category = "Students.low", word = "universität")
+```
+
+
+## American - Students.high
+```{r}
+EdgeBundling(type = "American", data = "human", category = "Students.high", word = "art")
+EdgeBundling(type = "American", data = "human", category = "Students.high", word = "biology")
+EdgeBundling(type = "American", data = "human", category = "Students.high", word = "chemistry")
+EdgeBundling(type = "American", data = "human", category = "Students.high", word = "creativity")
+EdgeBundling(type = "American", data = "human", category = "Students.high", word = "life")
+EdgeBundling(type = "American", data = "human", category = "Students.high", word = "mathematics")
+EdgeBundling(type = "American", data = "human", category = "Students.high", word = "physics")
+EdgeBundling(type = "American", data = "human", category = "Students.high", word = "sustainability")
+EdgeBundling(type = "American", data = "human", category = "Students.high", word = "school")
+EdgeBundling(type = "American", data = "human", category = "Students.high", word = "university")
+```
+
+## American - Students.low
+```{r}
+EdgeBundling(type = "American", data = "human", category = "Students.low", word = "art")
+EdgeBundling(type = "American", data = "human", category = "Students.low", word = "biology")
+EdgeBundling(type = "American", data = "human", category = "Students.low", word = "chemistry")
+EdgeBundling(type = "American", data = "human", category = "Students.low", word = "creativity")
+EdgeBundling(type = "American", data = "human", category = "Students.low", word = "life")
+EdgeBundling(type = "American", data = "human", category = "Students.low", word = "mathematics")
+EdgeBundling(type = "American", data = "human", category = "Students.low", word = "physics")
+EdgeBundling(type = "American", data = "human", category = "Students.low", word = "sustainability")
+EdgeBundling(type = "American", data = "human", category = "Students.low", word = "school")
+EdgeBundling(type = "American", data = "human", category = "Students.low", word = "university")
+```
+
+
+## Singapore - Students.high
+```{r}
+EdgeBundling(type = "Singapore", data = "human", category = "Students.high", word = "art")
+EdgeBundling(type = "Singapore", data = "human", category = "Students.high", word = "biology")
+EdgeBundling(type = "Singapore", data = "human", category = "Students.high", word = "chemistry")
+EdgeBundling(type = "Singapore", data = "human", category = "Students.high", word = "creativity")
+EdgeBundling(type = "Singapore", data = "human", category = "Students.high", word = "life")
+EdgeBundling(type = "Singapore", data = "human", category = "Students.high", word = "mathematics")
+EdgeBundling(type = "Singapore", data = "human", category = "Students.high", word = "physics")
+EdgeBundling(type = "Singapore", data = "human", category = "Students.high", word = "sustainability")
+EdgeBundling(type = "Singapore", data = "human", category = "Students.high", word = "school")
+EdgeBundling(type = "Singapore", data = "human", category = "Students.high", word = "university")
+```
+
+## Singapore - Students.low
+```{r}
+EdgeBundling(type = "Singapore", data = "human", category = "Students.low", word = "art")
+EdgeBundling(type = "Singapore", data = "human", category = "Students.low", word = "biology")
+EdgeBundling(type = "Singapore", data = "human", category = "Students.low", word = "chemistry")
+EdgeBundling(type = "Singapore", data = "human", category = "Students.low", word = "creativity")
+EdgeBundling(type = "Singapore", data = "human", category = "Students.low", word = "life")
+EdgeBundling(type = "Singapore", data = "human", category = "Students.low", word = "mathematics")
+EdgeBundling(type = "Singapore", data = "human", category = "Students.low", word = "physics")
+EdgeBundling(type = "Singapore", data = "human", category = "Students.low", word = "sustainability")
+EdgeBundling(type = "Singapore", data = "human", category = "Students.low", word = "school")
+EdgeBundling(type = "Singapore", data = "human", category = "Students.low", word = "university")
+```
+
+
+## Italian - Students.high
+```{r}
+EdgeBundling(type = "Italian", data = "human", category = "Students.high", word = "arte")
+EdgeBundling(type = "Italian", data = "human", category = "Students.high", word = "biologia")
+EdgeBundling(type = "Italian", data = "human", category = "Students.high", word = "chimica")
+EdgeBundling(type = "Italian", data = "human", category = "Students.high", word = "creatività")
+EdgeBundling(type = "Italian", data = "human", category = "Students.high", word = "vita")
+EdgeBundling(type = "Italian", data = "human", category = "Students.high", word = "matematica")
+EdgeBundling(type = "Italian", data = "human", category = "Students.high", word = "fisica")
+EdgeBundling(type = "Italian", data = "human", category = "Students.high", word = "sostenibilità")
+EdgeBundling(type = "Italian", data = "human", category = "Students.high", word = "scuola")
+EdgeBundling(type = "Italian", data = "human", category = "Students.high", word = "università")
+```
+
+## Italian - Students.low
+```{r}
+EdgeBundling(type = "Italian", data = "human", category = "Students.low", word = "arte")
+EdgeBundling(type = "Italian", data = "human", category = "Students.low", word = "biologia")
+EdgeBundling(type = "Italian", data = "human", category = "Students.low", word = "chimica")
+EdgeBundling(type = "Italian", data = "human", category = "Students.low", word = "creatività")
+EdgeBundling(type = "Italian", data = "human", category = "Students.low", word = "vita")
+EdgeBundling(type = "Italian", data = "human", category = "Students.low", word = "matematica")
+EdgeBundling(type = "Italian", data = "human", category = "Students.low", word = "fisica")
+EdgeBundling(type = "Italian", data = "human", category = "Students.low", word = "sostenibilità")
+EdgeBundling(type = "Italian", data = "human", category = "Students.low", word = "scuola")
+EdgeBundling(type = "Italian", data = "human", category = "Students.low", word = "università")
+```
+

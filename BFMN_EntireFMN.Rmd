@@ -1,0 +1,666 @@
+---
+title: "TFMNs and Cluster coefficients"
+author: "Edith Haim"
+date: "`r Sys.Date()`"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r include=FALSE}
+library(dplyr)
+library(ggplot2)
+library(ggraph)
+library(igraph)
+library(cowplot)
+library(tidyr)
+library(readxl)
+library(dplyr)
+library(igraph)
+```
+
+#### UPDATED CODE
+```{r include=FALSE}
+
+FormaMentisNetworks <- function(type = "American", data = "human", category = "Students.low"){
+  # Erstelle den Namen des Tabellenblatts
+  sheet_name <- paste(type, category, data, sep = "_")
+
+  # Lese die Daten aus der Excel-Datei
+  file_path <- "~/PhD Edith Haim/Publications/8. Multiplex PhD Project/0. Network Generating/BFMN Scripts/PhD_FMN_Data.xlsx"
+  data_all <- read_excel(file_path, sheet = sheet_name)
+  
+# Create a data frame for connections
+connections <- rbind(
+  data_all %>% select(from = cue_word, to = association1),
+  data_all %>% select(from = cue_word, to = association2),
+  data_all %>% select(from = cue_word, to = association3)
+)
+
+# Delete connections that only appear once
+connections <- connections %>%
+  group_by(from, to) %>%
+  filter(n() > 1) %>%
+  ungroup()
+
+# Remove missing data
+connections <- subset(connections, !is.na(connections$to) & connections$to != "")
+
+# Create a vertices data frame
+vertices <- data.frame(name = unique(c(as.character(connections$from), as.character(connections$to))))
+
+# Delete all duplicate connections
+connections <- connections %>% distinct(from, to, .keep_all = TRUE)
+
+# Calculate median valence and perform sign test
+concept_rating <- rbind(
+  data_all %>% select(concept = cue_word, rating),
+  data_all %>% select(concept = association1, rating = rating1),
+  data_all %>% select(concept = association2, rating = rating2),
+  data_all %>% select(concept = association3, rating = rating3)
+) %>% filter(concept != "") %>% filter(!is.na(rating))
+
+perform_wilcoxon_test <- function(name) {
+  concept_ratings_concept <- subset(concept_rating, concept == name)$rating
+  concept_ratings_remaining <- subset(concept_rating, concept != name)$rating
+  wilcox_test_result <- wilcox.test(concept_ratings_concept, concept_ratings_remaining, alternative = "two.sided", exact = FALSE)
+  return(wilcox_test_result$p.value)
+}
+
+properties <- vertices
+properties$median_valence <- sapply(properties$name, function(name) {
+  median(subset(concept_rating, concept == name)$rating, na.rm = TRUE)
+})
+properties$median_remaining <- sapply(properties$name, function(name) {
+  median(subset(concept_rating, concept != name)$rating, na.rm = TRUE)
+})
+properties$p_value <- sapply(properties$name, perform_wilcoxon_test)
+
+properties <- properties %>% mutate(valence_category = case_when(
+  median_valence > median_remaining & p_value < 0.1 ~ "positive",
+  median_valence < median_remaining & p_value < 0.1 ~ "negative",
+  TRUE ~ "neutral"
+))
+
+# Set node colors based on valence category
+properties <- properties %>%
+  mutate(node_color = case_when(
+    valence_category == "positive" ~ "#3491fa", 
+    valence_category == "negative" ~ "#ed382e", 
+    valence_category == "neutral" ~ "black",
+    TRUE ~ "#bdb7be"  # Default to grey for any other cases
+  ))
+
+#create link table
+connections2 <- connections
+connections2$nodecolor1 <- properties$node_color[match(connections2$from, properties$name)]
+connections2$nodecolor2 <- properties$node_color[match(connections2$to, properties$name)]
+
+connections2 <- connections2 %>%
+  mutate(link_color = case_when(
+    nodecolor1 == "#3491fa" & nodecolor2 == "#3491fa" ~ "#3491fa", 
+    nodecolor1 == "#ed382e" & nodecolor2 == "#ed382e" ~ "#ed382e", 
+    nodecolor1 == "black" & nodecolor2 == "black" ~ "#bdb7be", 
+    (nodecolor1 == "#3491fa" & nodecolor2 == "#ed382e") | 
+      (nodecolor1 == "#ed382e" & nodecolor2 == "#3491fa") ~ "purple",
+    TRUE ~ "#bdb7be"  # Default to grey for any other cases
+  )) 
+
+
+# Create the graph object (use connections2 so edge attributes exist)
+graph <- graph_from_data_frame(connections2, vertices = vertices)
+
+# Attach colors as graph attributes
+E(graph)$link_color <- connections2$link_color
+V(graph)$node_color <- properties$node_color[match(V(graph)$name, properties$name)]
+
+# Plot the graph
+ggraph(graph, layout = 'fr') + 
+  geom_edge_link(aes(edge_colour = link_color), width = 1, alpha = 0.8) +
+  geom_node_point(aes(color = node_color), size = 5) +
+  geom_node_text(aes(label = "", color = node_color), repel = TRUE, size = 5) +
+  scale_color_identity() +
+  scale_edge_colour_identity() +
+  theme_void() +
+  theme(legend.position = "none")
+
+
+}
+
+##############################################
+
+clustering_coefficients <- function(type = "American", data = "human", category = "Students.low"){
+  # Erstelle den Namen des Tabellenblatts
+  sheet_name <- paste(type, category, data, sep = "_")
+
+  # Lese die Daten aus der Excel-Datei
+  file_path <- "~/PhD Edith Haim/Publications/8. Multiplex PhD Project/0. Network Generating/BFMN Scripts/PhD_FMN_Data.xlsx"
+  data_all <- read_excel(file_path, sheet = sheet_name)
+  
+
+# Create a data frame for connections
+connections <- rbind(
+  data_all %>% select(from = cue_word, to = association1),
+  data_all %>% select(from = cue_word, to = association2),
+  data_all %>% select(from = cue_word, to = association3)
+)
+
+# Delete connections that only appear once
+connections <- connections %>%
+  group_by(from, to) %>%
+  filter(n() > 1) %>%
+  ungroup()
+
+# Remove missing data
+connections <- subset(connections, !is.na(connections$to) & connections$to != "")
+
+# Create a vertices data frame
+vertices <- data.frame(name = unique(c(as.character(connections$from), as.character(connections$to))))
+
+# Delete all duplicate connections
+connections <- connections %>% distinct(from, to, .keep_all = TRUE)
+
+# Calculate median valence and perform sign test
+concept_rating <- rbind(
+  data_all %>% select(concept = cue_word, rating),
+  data_all %>% select(concept = association1, rating = rating1),
+  data_all %>% select(concept = association2, rating = rating2),
+  data_all %>% select(concept = association3, rating = rating3)
+) %>% filter(concept != "") %>% filter(!is.na(rating))
+
+perform_wilcoxon_test <- function(name) {
+  concept_ratings_concept <- subset(concept_rating, concept == name)$rating
+  concept_ratings_remaining <- subset(concept_rating, concept != name)$rating
+  wilcox_test_result <- wilcox.test(concept_ratings_concept, concept_ratings_remaining, alternative = "two.sided", exact = FALSE)
+  return(wilcox_test_result$p.value)
+}
+
+properties <- vertices
+properties$median_valence <- sapply(properties$name, function(name) {
+  median(subset(concept_rating, concept == name)$rating, na.rm = TRUE)
+})
+properties$median_remaining <- sapply(properties$name, function(name) {
+  median(subset(concept_rating, concept != name)$rating, na.rm = TRUE)
+})
+properties$p_value <- sapply(properties$name, perform_wilcoxon_test)
+
+properties <- properties %>% mutate(valence_category = case_when(
+  median_valence > median_remaining & p_value < 0.1 ~ "positive",
+  median_valence < median_remaining & p_value < 0.1 ~ "negative",
+  TRUE ~ "neutral"
+))
+
+# Set node colors based on valence category
+properties <- properties %>%
+  mutate(node_color = case_when(
+    valence_category == "positive" ~ "#3491fa", 
+    valence_category == "negative" ~ "#ed382e", 
+    valence_category == "neutral" ~ "black",
+    TRUE ~ "#bdb7be"  # Default to grey for any other cases
+  ))
+
+#create link table
+connections2 <- connections
+connections2$nodecolor1 <- properties$node_color[match(connections2$from, properties$name)]
+connections2$nodecolor2 <- properties$node_color[match(connections2$to, properties$name)]
+
+connections2 <- connections2 %>%
+  mutate(link_color = case_when(
+    nodecolor1 == "#3491fa" & nodecolor2 == "#3491fa" ~ "#3491fa", 
+    nodecolor1 == "#ed382e" & nodecolor2 == "#ed382e" ~ "#ed382e", 
+    nodecolor1 == "black" & nodecolor2 == "black" ~ "#bdb7be", 
+    (nodecolor1 == "#3491fa" & nodecolor2 == "#ed382e") | 
+      (nodecolor1 == "#ed382e" & nodecolor2 == "#3491fa") ~ "purple",
+    TRUE ~ "#bdb7be"  # Default to grey for any other cases
+  )) 
+
+link <- connections2$link_color
+link <- lapply(link, function(x) replicate(100,x))
+link <- unlist(link, recursive = FALSE)
+
+# Create the graph object
+graph <- graph_from_data_frame(connections, vertices = vertices)
+
+deg_seq <- degree(graph)
+emperical_clustering_coefficient <- transitivity(graph, type = "average")
+
+clustering_coefficients <- numeric(500)
+
+for (i in 1:500) {
+  config_model <- sample_degseq(deg_seq, method = "configuration")
+
+  avg_clustering_coefficient <- transitivity(config_model, type = "average")
+  
+  clustering_coefficients[i] <- avg_clustering_coefficient
+}
+
+# Create a data frame for plotting
+clustering_data <- data.frame(clustering_coefficients)
+
+# Plot the histogram and highlight the empirical clustering coefficient
+ggplot(clustering_data, aes(x = clustering_coefficients)) +
+  geom_histogram(binwidth = 0.01, fill = "lightblue", color = "black") +
+  geom_vline(aes(xintercept = emperical_clustering_coefficient), color = "red", linetype = "dashed", linewidth = 1) +
+  labs(title = "Distribution of Clustering Coefficients",
+       x = "Clustering Coefficient",
+       y = "Frequency") +
+  theme_minimal() +
+  annotate("text", x = emperical_clustering_coefficient, y = max(table(cut(clustering_coefficients, breaks = seq(0, 1, 0.01)))), 
+           label = paste("Empirical =", round(emperical_clustering_coefficient, 3)), 
+           color = "red", angle = 90, vjust = -0.5, hjust = 1)
+}
+```
+
+
+######
+
+## Austrian - Students.high
+```{r echo=FALSE}
+FormaMentisNetworks(type = "Austrian", data = "human", category = "Students.high")
+clustering_coefficients(type = "Austrian", data = "human", category = "Students.high")
+```
+
+## Austrian - Students.low
+
+```{r echo=FALSE}
+FormaMentisNetworks(type = "Austrian", data = "human", category = "Students.low")
+clustering_coefficients(type = "Austrian", data = "human", category = "Students.low")
+```
+
+######
+
+## American - Students.high
+```{r echo=FALSE}
+clustering_coefficients(type = "American", data = "human", category = "Students.high")
+FormaMentisNetworks(type = "American", data = "human", category = "Students.high")
+
+```
+
+## American - Students.low
+```{r echo=FALSE}
+FormaMentisNetworks(type = "American", data = "human", category = "Students.low")
+clustering_coefficients(type = "American", data = "human", category = "Students.low")
+```
+
+######
+
+## Singapore - Students.high
+```{r echo=FALSE}
+FormaMentisNetworks(type = "Singapore", data = "human", category = "Students.high")
+clustering_coefficients(type = "Singapore", data = "human", category = "Students.high")
+```
+
+## Singapore - Students.low
+```{r echo=FALSE}
+FormaMentisNetworks(type = "Singapore", data = "human", category = "Students.low")
+clustering_coefficients(type = "Singapore", data = "human", category = "Students.low")
+```
+
+######
+
+## Italian - Students.high
+```{r echo=FALSE}
+FormaMentisNetworks(type = "Italian", data = "human", category = "Students.high")
+clustering_coefficients(type = "Italian", data = "human", category = "Students.high")
+```
+
+## Italian - Students.low
+```{r echo=FALSE}
+FormaMentisNetworks(type = "Italian", data = "human", category = "Students.low")
+clustering_coefficients(type = "Italian", data = "human", category = "Students.low")
+```
+
+################################
+
+## Austrian - Students.high - AI
+```{r echo=FALSE}
+FormaMentisNetworks(type = "Austrian", data = "AI", category = "Students.high")
+clustering_coefficients(type = "Austrian", data = "AI", category = "Students.high")
+```
+
+## Austrian - Students.low - AI
+
+```{r echo=FALSE}
+FormaMentisNetworks(type = "Austrian", data = "AI", category = "Students.low")
+clustering_coefficients(type = "Austrian", data = "AI", category = "Students.low")
+```
+######
+
+## American - Students.high - AI
+```{r echo=FALSE}
+clustering_coefficients(type = "American", data = "AI", category = "Students.high")
+FormaMentisNetworks(type = "American", data = "AI", category = "Students.high")
+
+```
+
+## American - Students.low - AI
+```{r echo=FALSE}
+FormaMentisNetworks(type = "American", data = "AI", category = "Students.low")
+clustering_coefficients(type = "American", data = "AI", category = "Students.low")
+```
+
+######
+
+## Singapore - Students.high - AI
+```{r echo=FALSE}
+FormaMentisNetworks(type = "Singapore", data = "AI", category = "Students.high")
+clustering_coefficients(type = "Singapore", data = "AI", category = "Students.high")
+```
+
+## Singapore - Students.low - AI
+```{r echo=FALSE}
+FormaMentisNetworks(type = "Singapore", data = "AI", category = "Students.low")
+clustering_coefficients(type = "Singapore", data = "AI", category = "Students.low")
+```
+
+######
+
+## Italian - Students.high - AI
+```{r echo=FALSE}
+FormaMentisNetworks(type = "Italian", data = "AI", category = "Students.high")
+clustering_coefficients(type = "Italian", data = "AI", category = "Students.high")
+```
+
+## Italian - Students.low - AI
+```{r echo=FALSE}
+FormaMentisNetworks(type = "Italian", data = "AI", category = "Students.low")
+clustering_coefficients(type = "Italian", data = "AI", category = "Students.low")
+```
+
+
+######################################
+
+## Network Measures
+```{r}
+network_measures <- function(type = "American", data = "human", category = "Students.low", save_graph = TRUE){
+  # Erstelle den Namen des Tabellenblatts
+  sheet_name <- paste(type, category, data, sep = "_")
+
+  # Lese die Daten aus der Excel-Datei
+  file_path <- "~/PhD Edith Haim/Publications/8. Multiplex PhD Project/0. Network Generating/BFMN Scripts/PhD_FMN_Data.xlsx"
+  data_all <- read_excel(file_path, sheet = sheet_name)
+
+  # Erstelle das Forma Mentis Netzwerk (Struktur bleibt gleich)
+  connections <- rbind(
+    data_all %>% select(from = cue_word, to = association1),
+    data_all %>% select(from = cue_word, to = association2),
+    data_all %>% select(from = cue_word, to = association3)
+  )
+
+  connections <- connections %>%
+    group_by(from, to) %>%
+    filter(n() > 1) %>%
+    ungroup()
+
+  connections <- subset(connections, !is.na(connections$to) & connections$to != "")
+  connections <- connections %>% distinct(from, to, .keep_all = TRUE)
+
+  vertices <- data.frame(name = unique(c(as.character(connections$from), as.character(connections$to))))
+  
+  # Ungerichtetes Netzwerk erstellen
+  graph <- graph_from_data_frame(connections, vertices = vertices, directed = FALSE)
+
+  # Graphen speichern als GraphML für Python
+  if (save_graph) {
+    file_name <- paste0(type, "_", category, "_", data, ".graphml")
+    write_graph(graph, file = file_name, format = "graphml")
+    message("Graph saved as: ", file_name)
+  }
+
+# Anzahl der Nodes und Edges im gesamten Netzwerk
+  num_nodes <- vcount(graph)
+  num_edges <- ecount(graph)
+
+  # Größte verbundenen Komponente (LCC) extrahieren
+  components <- components(graph, mode = "weak")
+  giant_component <- induced_subgraph(graph, which(components$membership == which.max(components$csize)))
+
+  num_nodes_LCC <- vcount(giant_component)
+  num_edges_LCC <- ecount(giant_component)
+  
+  # Netzwerk-Maße berechnen
+  ASPL <- mean_distance(graph)   # Average Shortest Path Length
+  diameter_value <- diameter(giant_component)  # Diameter
+  clustering_coefficient <- transitivity(graph, type = "average")
+  
+  # Walktrap-Community-Detection (für gerichtete Netzwerke)
+  community <- cluster_walktrap(graph)  
+  modularity_value <- modularity(community)  
+
+  # Zentralitätsmaße berechnen
+  degree_centrality <- mean(degree(graph, mode = "all"))
+  pagerank_centrality <- mean(page_rank(graph)$vector)
+  
+  
+  # Ergebnisse in einer Tabelle speichern
+  results <- data.frame(
+    Measure = c(
+      "Nodes in G", "Edges in G", "Nodes in LCC", "Edges in LCC",
+      "Diameter", "Average Shortest Path Length", "Clustering", "Modularity",
+      "Degree Centrality", "PageRank Centrality"
+    ),
+    Value = round(c(
+      num_nodes, num_edges, num_nodes_LCC, num_edges_LCC,
+      diameter_value, ASPL, clustering_coefficient, modularity_value,
+      degree_centrality, pagerank_centrality
+    ), 4)
+  )
+
+  return(results)
+}
+
+```
+
+
+## Calculate Network Measures for Austrian Humans
+```{r}
+# Funktion ausführen
+network_measures(type = "Austrian", data = "human", category = "Teachers")
+network_measures(type = "Austrian", data = "human", category = "Students.high")
+network_measures(type = "Austrian", data = "human", category = "Students.low")
+```
+
+## Calculate Network Measures for American Humans
+```{r}
+# Funktion ausführen
+network_measures(type = "American", data = "human", category = "Students.high")
+network_measures(type = "American", data = "human", category = "Students.low")
+```
+
+## Calculate Network Measures for Singapore Humans
+```{r}
+# Funktion ausführen
+network_measures(type = "Singapore", data = "human", category = "Students.high")
+network_measures(type = "Singapore", data = "human", category = "Students.low")
+```
+
+## Calculate Network Measures for Italian Humans
+```{r}
+# Funktion ausführen
+network_measures(type = "Italian", data = "human", category = "Students.high")
+network_measures(type = "Italian", data = "human", category = "Students.low")
+```
+
+################# AI Data
+
+## Calculate Network Measures for Austrian AI
+```{r}
+# Funktion ausführen
+network_measures(type = "Austrian", data = "AI", category = "Students.high")
+network_measures(type = "Austrian", data = "AI", category = "Students.low")
+```
+
+## Calculate Network Measures for American AI
+```{r}
+# Funktion ausführen
+#network_measures(type = "American", data = "AI", category = "Teachers")
+network_measures(type = "American", data = "AI", category = "Students.high")
+network_measures(type = "American", data = "AI", category = "Students.low")
+```
+
+## Calculate Network Measures for Singapore AI
+```{r}
+# Funktion ausführen
+network_measures(type = "Singapore", data = "AI", category = "Students.high")
+network_measures(type = "Singapore", data = "AI", category = "Students.low")
+```
+
+## Calculate Network Measures for Italian AI
+```{r}
+# Funktion ausführen
+network_measures(type = "Italian", data = "AI", category = "Students.high")
+network_measures(type = "Italian", data = "AI", category = "Students.low")
+```
+
+
+#################################
+
+## Reshuffling Experiments of undirected BFMNs (for all 4 measures)
+
+```{r}
+
+## Network Measures with Randomized Ensemble
+network_measures <- function(type = "American", data = "human", category = "Students.low", n = 500){
+  # Load data
+  sheet_name <- paste(type, category, data, sep = "_")
+  file_path <- "~/PhD Edith Haim/Publications/8. Multiplex PhD Project/0. Network Generating/BFMN Scripts/PhD_FMN_Data.xlsx"
+  data_all <- read_excel(file_path, sheet = sheet_name)
+
+  # Create Forma Mentis Network
+  connections <- rbind(
+    data_all %>% select(from = cue_word, to = association1),
+    data_all %>% select(from = cue_word, to = association2),
+    data_all %>% select(from = cue_word, to = association3)
+  )
+
+  connections <- connections %>%
+    group_by(from, to) %>%
+    filter(n() > 1) %>%
+    ungroup()
+
+  connections <- subset(connections, !is.na(connections$to) & connections$to != "")
+  connections <- connections %>% distinct(from, to, .keep_all = TRUE)
+
+  vertices <- data.frame(name = unique(c(as.character(connections$from), as.character(connections$to))))
+  
+  # Create undirected network
+  graph <- graph_from_data_frame(connections, vertices = vertices, directed = FALSE)
+
+  # Compute actual network measures
+  ASPL_real <- mean_distance(graph)   
+  diameter_real <- diameter(graph)  
+  clustering_real <- transitivity(graph, type = "average")
+
+  # Walktrap for community detection
+  community <- cluster_walktrap(graph)  
+  modularity_real <- modularity(community)  
+
+  # Generate random networks (500 samples)
+  deg_seq <- degree(graph)
+
+  ASPL_random <- numeric(n)
+  diameter_random <- numeric(n)
+  modularity_random <- numeric(n)
+  clustering_random <- numeric(n)
+
+  for (i in 1:n) {
+    config_graph <- sample_degseq(deg_seq, method = "configuration")
+    
+    ASPL_random[i] <- mean_distance(config_graph)
+    diameter_random[i] <- diameter(config_graph)
+    
+    # Compute modularity on random graphs
+    community_random <- cluster_walktrap(config_graph)
+    modularity_random[i] <- modularity(community_random)
+
+    # Compute clustering coefficient on random graphs
+    clustering_random[i] <- transitivity(config_graph, type = "average")
+  }
+
+  # Compute p-values
+  compute_p_value <- function(real_value, random_values) {
+    mean_random <- mean(random_values)
+    diff_real <- abs(real_value - mean_random)
+    count_extreme <- sum(abs(random_values - mean_random) >= diff_real)
+    return(count_extreme / n)
+  }
+
+  p_value_aspl <- compute_p_value(ASPL_real, ASPL_random)
+  p_value_diameter <- compute_p_value(diameter_real, diameter_random)
+  p_value_modularity <- compute_p_value(modularity_real, modularity_random)
+  p_value_clustering <- compute_p_value(clustering_real, clustering_random)
+
+  # Store results
+  results <- data.frame(
+    Measure = c("Average Shortest Path Length", "Diameter", "Clustering Coefficient", "Modularity"),
+    Empirical = c(ASPL_real, diameter_real, clustering_real, modularity_real),
+    Mean_Random = c(mean(ASPL_random), mean(diameter_random), mean(clustering_random), mean(modularity_random)),
+    P_Value = c(p_value_aspl, p_value_diameter, p_value_clustering, p_value_modularity)
+  )
+
+  return(results)
+}
+
+```
+
+```{r}
+# Run the function with Austrian Data
+network_measures(type = "Austrian", data = "human", category = "Students.low", n = 10000)
+network_measures(type = "Austrian", data = "human", category = "Students.high", n = 10000)
+```
+
+```{r}
+# Run the function with US Data
+network_measures(type = "American", data = "human", category = "Students.low", n = 1000)
+network_measures(type = "American", data = "human", category = "Students.high", n = 1000)
+```
+```{r}
+# Run the function with SG Data
+network_measures(type = "Singapore", data = "human", category = "Students.low", n = 1000)
+network_measures(type = "Singapore", data = "human", category = "Students.high", n = 1000)
+```
+
+```{r}
+# Run the function with IT Data
+network_measures(type = "Italian", data = "human", category = "Students.low", n = 1000)
+network_measures(type = "Italian", data = "human", category = "Students.high", n = 1000)
+```
+
+#### AI Data
+
+```{r}
+# Run the function with AT Data
+network_measures(type = "Austrian", data = "AI", category = "Students.low", n = 1000)
+network_measures(type = "Austrian", data = "AI", category = "Students.high", n = 1000)
+```
+
+```{r}
+# Run the function with US Data
+network_measures(type = "American", data = "AI", category = "Students.low", n = 1000)
+network_measures(type = "American", data = "AI", category = "Students.high", n = 1000)
+```
+
+```{r}
+# Run the function with SG Data
+network_measures(type = "Singapore", data = "AI", category = "Students.low", n = 1000)
+network_measures(type = "Singapore", data = "AI", category = "Students.high", n = 1000)
+```
+
+```{r}
+# Run the function with IT Data
+network_measures(type = "Italian", data = "AI", category = "Students.low", n = 1000)
+network_measures(type = "Italian", data = "AI", category = "Students.high", n = 1000)
+```
+
+
+
+## Checking why degree centrality is so high
+igraph::read_graph("Austrian_Teachers.graphml", format = "graphml")
+
+graph <- read_graph("Austrian_Teachers.graphml", format = "graphml")
+hist(degree(graph, mode = "all"), breaks = 20, main = "Degree Distribution")
+
+mean(degree(as.undirected(graph)))
+
+edge_density(graph, loops = FALSE)
+

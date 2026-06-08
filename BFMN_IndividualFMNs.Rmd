@@ -1,0 +1,325 @@
+---
+title: "PhD_IndividualFMN"
+author: "Edith Haim"
+date: "2026-02-04"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r include=FALSE}
+library(dplyr)
+library(ggplot2)
+library(ggraph)
+library(igraph)
+library(cowplot)
+library(tidyr)
+library(readxl)
+library(writexl)
+library(moments)
+```
+
+
+##  Individual total networks (metrics and visuals in separate functions)
+```{r}
+IndividualFormaMentisNetworks <- function(type = "American", data = "human", category = "Students.low"){
+  sheet_name <- paste(type, category, data, sep = "_")
+  file_path <- "~/PhD Edith Haim/Publications/8. Multiplex PhD Project/0. Network Generating/BFMN Scripts/PhD_FMN_Data.xlsx"
+  data_all <- read_excel(file_path, sheet = sheet_name)
+
+  participants <- unique(data_all$participant)
+  results_list <- list()
+
+  for(pid in participants){
+
+    data_ind <- data_all %>% filter(participant == pid)
+
+    connections <- rbind(
+      data_ind %>% select(from = cue_word, to = association1),
+      data_ind %>% select(from = cue_word, to = association2),
+      data_ind %>% select(from = cue_word, to = association3)
+    ) %>%
+      filter(!is.na(to) & to != "") %>%
+      count(from, to, name = "weight")
+
+    if(nrow(connections) < 1) next
+
+    vertices <- data.frame(
+      name = unique(c(as.character(connections$from), as.character(connections$to)))
+    )
+
+    concept_rating <- rbind(
+      data_ind %>% select(concept = cue_word, rating),
+      data_ind %>% select(concept = association1, rating = rating1),
+      data_ind %>% select(concept = association2, rating = rating2),
+      data_ind %>% select(concept = association3, rating = rating3)
+    ) %>%
+      filter(concept != "", !is.na(rating))
+
+    ratings_all <- c(data_ind$rating, data_ind$rating1, data_ind$rating2, data_ind$rating3)
+    ratings_all <- ratings_all[!is.na(ratings_all)]
+
+    valence_summary <- concept_rating %>%
+      group_by(concept) %>%
+      summarise(mean_valence = mean(rating, na.rm = TRUE), .groups = "drop")
+
+    vertices <- vertices %>%
+      left_join(valence_summary, by = c("name" = "concept")) %>%
+      mutate(
+        valence_category = case_when(
+          mean_valence > 3 ~ "positive",
+          mean_valence < 3 ~ "negative",
+          TRUE ~ "neutral"
+        ),
+        node_color = case_when(
+          valence_category == "positive" ~ "#3491fa",
+          valence_category == "negative" ~ "#ed382e",
+          valence_category == "neutral"  ~ "black",
+          TRUE ~ "#bdb7be"
+        )
+      )
+
+    connections2 <- connections %>%
+      mutate(
+        nodecolor1 = vertices$node_color[match(from, vertices$name)],
+        nodecolor2 = vertices$node_color[match(to,   vertices$name)],
+        link_color = case_when(
+          nodecolor1 == "#3491fa" & nodecolor2 == "#3491fa" ~ "#3491fa",
+          nodecolor1 == "#ed382e" & nodecolor2 == "#ed382e" ~ "#ed382e",
+          nodecolor1 == "black"   & nodecolor2 == "black"   ~ "#bdb7be",
+          (nodecolor1 == "#3491fa" & nodecolor2 == "#ed382e") |
+            (nodecolor1 == "#ed382e" & nodecolor2 == "#3491fa") ~ "purple",
+          TRUE ~ "#bdb7be"
+        )
+      )
+
+    graph <- graph_from_data_frame(connections2, directed = FALSE, vertices = vertices)
+    E(graph)$link_color <- connections2$link_color
+    E(graph)$weight     <- connections2$weight
+    V(graph)$node_color <- vertices$node_color[match(V(graph)$name, vertices$name)]
+
+    # ---- COMPONENTS ----
+    subs <- decompose(graph)
+    subs_3plus <- subs[sapply(subs, vcount) >= 3]
+    subs_4plus <- subs[sapply(subs, vcount) >  4]
+
+    n_components       <- length(subs_3plus)
+    n_components_4plus <- length(subs_4plus)
+
+    if(length(subs_3plus) > 0){
+      lcc <- subs_3plus[[which.max(sapply(subs_3plus, vcount))]]
+    } else {
+      lcc <- graph
+    }
+
+    lcc_nodes <- vcount(lcc)
+    total_nodes <- vcount(graph)
+    BFM_LCC_Proportion_value <- lcc_nodes / total_nodes
+
+    pr_lcc <- page_rank(lcc)$vector
+
+    lcc_metrics <- data.frame(
+      edges      = ecount(lcc),
+      nodes      = vcount(lcc),
+      diameter   = diameter(lcc, directed = FALSE),
+      aspl_lcc   = mean_distance(lcc, directed = FALSE),
+      cc         = transitivity(lcc, type = "average"),
+      q          = tryCatch(modularity(cluster_louvain(lcc)), error = function(e) NA),
+      deg_cent   = centr_degree(lcc)$centralization,
+      assort     = assortativity_degree(lcc, directed = FALSE),
+      pr_range   = max(pr_lcc) - min(pr_lcc)
+    )
+
+    if(length(subs_3plus) > 0){
+      aspl_mean_components <- mean(
+        sapply(subs_3plus, function(g) mean_distance(g, directed = FALSE)),
+        na.rm = TRUE
+      )
+      total_edges_components <- sum(sapply(subs_3plus, ecount))
+      total_nodes_components <- sum(sapply(subs_3plus, vcount))
+    } else {
+      aspl_mean_components   <- NA
+      total_edges_components <- NA
+      total_nodes_components <- NA
+    }
+
+    # ---- STORE RESULTS ----
+    results_list[[pid]] <- data.frame(
+      participant                 = pid,
+      BFM_Number_Components       = n_components,
+      BFM_Number_Components_4plus = n_components_4plus,
+      BFM_LCC_Proportion          = BFM_LCC_Proportion_value,
+      BFM_Edges_Total             = total_edges_components,
+      BFM_Nodes_Total             = total_nodes_components,
+      BFM_Edges_LCC               = ecount(lcc),
+      BFM_Nodes_LCC               = vcount(lcc),
+      BFM_Diameter                = lcc_metrics$diameter,
+      BFM_ASPL_LCC                = lcc_metrics$aspl_lcc,
+      BFM_ASPL_mean_components    = aspl_mean_components,
+      BFM_CC                      = lcc_metrics$cc,
+      BFM_Q                       = lcc_metrics$q,
+      BFM_Degree_centr            = lcc_metrics$deg_cent,
+      BFM_Degree_assort           = lcc_metrics$assort,
+      BFM_Pagerank_range          = lcc_metrics$pr_range,
+      BFM_valence_mean            = mean(ratings_all),
+      BFM_valence_sd              = sd(ratings_all),
+      BFM_valence_skew            = ifelse(length(ratings_all) >= 3,
+                                           moments::skewness(ratings_all), NA),
+      BFM_pct_positive            = mean(ratings_all >= 4) * 100,
+      BFM_pct_neutral             = mean(ratings_all == 3) * 100,
+      BFM_pct_negative            = mean(ratings_all <= 2) * 100
+    )
+  }
+
+  results_df <- bind_rows(results_list)
+  file_out <- paste0("BFMN_", type, "_", category, "_", data, ".xlsx")
+  write_xlsx(results_df, file_out)
+  return(results_df)
+}
+
+
+VisualizeIndividualNetworks <- function(type = "American", data = "human", category = "Students.low"){
+  sheet_name <- paste(type, category, data, sep = "_")
+  file_path <- "~/PhD Edith Haim/Publications/8. Multiplex PhD Project/0. Network Generating/BFMN Scripts/PhD_FMN_Data.xlsx"
+  data_all <- read_excel(file_path, sheet = sheet_name)
+
+  participants <- unique(data_all$participant)
+
+  for(pid in participants){
+
+    data_ind <- data_all %>% filter(participant == pid)
+
+    connections <- rbind(
+      data_ind %>% select(from = cue_word, to = association1),
+      data_ind %>% select(from = cue_word, to = association2),
+      data_ind %>% select(from = cue_word, to = association3)
+    ) %>%
+      filter(!is.na(to) & to != "") %>%
+      count(from, to, name = "weight")
+
+    if(nrow(connections) < 1) next
+
+    vertices <- data.frame(
+      name = unique(c(as.character(connections$from), as.character(connections$to)))
+    )
+
+    concept_rating <- rbind(
+      data_ind %>% select(concept = cue_word, rating),
+      data_ind %>% select(concept = association1, rating = rating1),
+      data_ind %>% select(concept = association2, rating = rating2),
+      data_ind %>% select(concept = association3, rating = rating3)
+    ) %>%
+      filter(concept != "", !is.na(rating))
+
+    valence_summary <- concept_rating %>%
+      group_by(concept) %>%
+      summarise(mean_valence = mean(rating, na.rm = TRUE), .groups = "drop")
+
+    vertices <- vertices %>%
+      left_join(valence_summary, by = c("name" = "concept")) %>%
+      mutate(
+        valence_category = case_when(
+          mean_valence > 3 ~ "positive",
+          mean_valence < 3 ~ "negative",
+          TRUE ~ "neutral"
+        ),
+        node_color = case_when(
+          valence_category == "positive" ~ "#3491fa",
+          valence_category == "negative" ~ "#ed382e",
+          valence_category == "neutral"  ~ "black",
+          TRUE ~ "#bdb7be"
+        )
+      )
+
+    connections2 <- connections %>%
+      mutate(
+        nodecolor1 = vertices$node_color[match(from, vertices$name)],
+        nodecolor2 = vertices$node_color[match(to,   vertices$name)],
+        link_color = case_when(
+          nodecolor1 == "#3491fa" & nodecolor2 == "#3491fa" ~ "#3491fa",
+          nodecolor1 == "#ed382e" & nodecolor2 == "#ed382e" ~ "#ed382e",
+          nodecolor1 == "black"   & nodecolor2 == "black"   ~ "#bdb7be",
+          (nodecolor1 == "#3491fa" & nodecolor2 == "#ed382e") |
+            (nodecolor1 == "#ed382e" & nodecolor2 == "#3491fa") ~ "purple",
+          TRUE ~ "#bdb7be"
+        )
+      )
+
+    graph <- graph_from_data_frame(connections2, directed = FALSE, vertices = vertices)
+    E(graph)$link_color <- connections2$link_color
+    E(graph)$weight     <- connections2$weight
+    V(graph)$node_color <- vertices$node_color[match(V(graph)$name, vertices$name)]
+
+    # ---- PLOT ----
+    p <- ggraph(graph, layout = "fr") +
+      geom_edge_link(aes(edge_colour = link_color, width = weight), alpha = 0.75) +
+      geom_node_point(aes(color = node_color), size = 5) +
+      geom_node_text(
+        aes(label = name, color = node_color),
+        repel = TRUE, size = 4, fontface = "plain", max.overlaps = Inf,
+        point.padding = unit(0.35, "lines"), box.padding = unit(0.45, "lines"),
+        segment.color = "grey60", segment.size = 0.4,
+        bg.color = "white", bg.r = 0.12
+      ) +
+      scale_color_identity() +
+      scale_edge_colour_identity() +
+      scale_edge_width(range = c(0.8, 2.2), guide = "none") +
+      theme_void() +
+      theme(
+        legend.position = "none",
+        plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+        plot.margin = margin(15, 15, 15, 15)
+      ) +
+      ggtitle(paste("Participant", pid))
+
+    print(p)
+
+    file_name <- paste0("BFMN_", type, "_", category, "_", data, "_Participant_", pid, ".png")
+    ggsave(filename = file_name, plot = p, width = 10, height = 8, dpi = 600, bg = "white")
+  }
+}
+```
+
+
+####### Usage
+
+```{r}
+IndividualFormaMentisNetworks(type = "Austrian",category = "Students.high", data = "human")
+#VisualizeIndividualNetworks(type = "Austrian",category = "Students.high", data = "human")
+```
+
+```{r}
+IndividualFormaMentisNetworks(type = "Austrian",category = "Students.low", data = "human")
+#VisualizeIndividualNetworks(type = "Austrian",category = "Students.low", data = "human")
+```
+
+```{r}
+IndividualFormaMentisNetworks(type = "American",category = "Students.high", data = "human")
+#VisualizeIndividualNetworks(type = "American",category = "Students.high", data = "human")
+```
+
+```{r}
+IndividualFormaMentisNetworks(type = "American",category = "Students.low", data = "human")
+#VisualizeIndividualNetworks(type = "American",category = "Students.low", data = "human")
+```
+
+```{r}
+IndividualFormaMentisNetworks(type = "Singapore",category = "Students.high", data = "human")
+#VisualizeIndividualNetworks(type = "Singapore",category = "Students.high", data = "human")
+```
+
+```{r}
+IndividualFormaMentisNetworks(type = "Singapore",category = "Students.low", data = "human")
+#VisualizeIndividualNetworks(type = "Singapore",category = "Students.low", data = "human")
+```
+
+```{r}
+IndividualFormaMentisNetworks(type = "Italian",category = "Students.high", data = "human")
+#VisualizeIndividualNetworks(type = "Italian",category = "Students.high", data = "human")
+```
+
+```{r}
+IndividualFormaMentisNetworks(type = "Italian",category = "Students.low", data = "human")
+VisualizeIndividualNetworks(type = "Italian",category = "Students.low", data = "human")
+```
+
