@@ -59,9 +59,9 @@ Behavioural Forma Mentis Networks combine semantic relationships between concept
 For theoretical and methodological details, please consult the publications listed below.
 
 ## Citation
-Brian, K., & Stella, M. (2023). Introducing mindset streams to investigate stances towards STEM in high school students and experts. Physica A: Statistical Mechanics and its Applications, 626, 129074.
-Haim E., Van den Bergh L., Marinazzo D., Siew C., Stella M. (2026a). Cognitive networks highlight differences and similarities in the STEM mindsets of human and LLM-simulated trainees, experts and academics. Journal of Complex Networks, 14(2).
-Haim, E., Haim, K., Beaty, R.E., Siew, C.S.Q., Stella, M. (2026b). Introducing multiplex semantic networks as multifaceted representations of creative associative knowledge across multilingual samples. arXiv.
+* Brian, K., & Stella, M. (2023). Introducing mindset streams to investigate stances towards STEM in high school students and experts. Physica A: Statistical Mechanics and its Applications, 626, 129074.
+* Haim E., Van den Bergh L., Marinazzo D., Siew C., Stella M. (2026a). Cognitive networks highlight differences and similarities in the STEM mindsets of human and LLM-simulated trainees, experts and academics. Journal of Complex Networks, 14(2).
+* Haim, E., Haim, K., Beaty, R.E., Siew, C.S.Q., Stella, M. (2026b). Introducing multiplex semantic networks as multifaceted representations of creative associative knowledge across multilingual samples. arXiv.
 
 ## License
 
